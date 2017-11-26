@@ -42,7 +42,7 @@ def mm_actions(prices, mm):
     return result
 
 
-def compute(stock_info, stock_id, avg_window=20, print_actions=False, plot_prices=False):
+def compute(stock_info, stock_id, avg_window=20, plot_prices=False):
     sec_id = stock_id
     if stock_id[0] == '0':
         sec_id += '.XSHE'
@@ -51,6 +51,7 @@ def compute(stock_info, stock_id, avg_window=20, print_actions=False, plot_price
     else:
         raise ValueError(f'Invalid stock id {stock_id}')
     hist = stock_info.get_history(sec_id)
+    logging.debug('Receive response %r', hist)
     try:
         hist = hist['data']
     except KeyError:
@@ -62,8 +63,7 @@ def compute(stock_info, stock_id, avg_window=20, print_actions=False, plot_price
 
     win_ratios = (actions[:, 1] - actions[:, 0]) / actions[:, 0]
     total_win_ratio = (actions[:, 1] - actions[:, 0]).sum() / actions[:, 0].sum()
-    if print_actions:
-        print('actions:', actions, 'win_ratios', win_ratios, sep='\n')
+    logging.debug('actions:\n%r\nwin_ratios:\n%r', actions, win_ratios)
 
     if plot_prices:
         from matplotlib import pyplot as plt
@@ -80,14 +80,17 @@ def compute(stock_info, stock_id, avg_window=20, print_actions=False, plot_price
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format='[%(levelname)s %(asctime)s]    %(message)s')
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--id', required=True, help='一个或多个股票代码，用逗号分离')
     parser.add_argument('-f', '--file', required=True, help='输出Excel文件名')
     parser.add_argument('-t', '--token', required=True, help='通联数据Token')
     parser.add_argument('--plot', action='store_true', help='显示股票走势')
+    parser.add_argument('--debug', action='store_true', help='开启调试模式')
 
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO if not args.debug else logging.DEBUG,
+                        format='[%(levelname)s %(asctime)s]    %(message)s')
+
     ids = args.id.split(',')
     stock_info = StockInfo(args.token)
     writer = xlsxwriter.Workbook(args.file)
