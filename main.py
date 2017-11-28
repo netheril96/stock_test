@@ -54,22 +54,30 @@ def analyze_actions(actions):
 
 def parse_csv_file(filename):
     prices = []
-    ma20 = []
+    ma20s = []
     with open(filename, encoding='gbk') as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            stock_id = row['股票代码']
-            stock_name = row['股票名称']
-            first_date = row['交易日期']
-            prices.append(float(row['收盘价']))
-            ma20.append(float(row['MA_20']))
-    return stock_id, stock_name, first_date, np.array(prices)[::-1], np.array(ma20)[::-1]
+        for i, row in enumerate(reader):
+            try:
+                stock_id = row['股票代码']
+                stock_name = row['股票名称']
+                first_date = row['交易日期']
+                close_price = float(row['收盘价'])
+                ma20 = float(row['MA_20'])
+            except (KeyError, ValueError) as e:
+                logging.error('解析第%d行时发生错误: %r', i + 2, e)
+            else:
+                prices.append(close_price)
+                ma20s.append(ma20)
+    return stock_id, stock_name, first_date, np.array(prices)[::-1], np.array(ma20s)[::-1]
 
 
 def _worker_main(filename):
-    stock_id, stock_name, first_date, prices, ma20 = parse_csv_file(filename)
-    result = (stock_id, stock_name, first_date) + analyze_actions(mm_actions(prices, ma20))
-    return result
+    try:
+        stock_id, stock_name, first_date, prices, ma20 = parse_csv_file(filename)
+        return (stock_id, stock_name, first_date) + analyze_actions(mm_actions(prices, ma20))
+    except Exception as e:
+        logging.error('解析文件%r时发生错误: %r', filename, e)
 
 
 def main():
@@ -96,6 +104,8 @@ def main():
             sheet.write_string(0, i, name)
 
         for j, info in enumerate(lazy_results):
+            if not info:
+                continue  # Error results
             for i, v in enumerate(info):
                 if isinstance(v, str):
                     sheet.write_string(j + 1, i, v)
