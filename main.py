@@ -7,6 +7,9 @@ import requests
 import sys
 import argparse
 import logging
+import csv
+import multiprocessing
+import glob
 
 
 class StockInfo:
@@ -39,61 +42,52 @@ def mm_actions(prices, mm):
         elif p < m and last_buy is not None:
             result.append((last_buy, p))
             last_buy = None
+    return np.array(result)
+
+
+def analyze_actions(actions):
+    win_ratios = (actions[:, 1] - actions[:, 0]) / actions[:, 0]
+    total_win_ratio = (actions[:, 1] - actions[:, 0]).sum() / actions[:, 0].sum()
+    return (len(actions), total_win_ratio, max(0, np.max(win_ratios)), min(0, np.min(win_ratios)),
+            np.sum(actions[:, 0] < actions[:, 1]), np.sum(actions[:, 0] > actions[:, 1]))
+
+
+def parse_csv_file(filename):
+    prices = []
+    ma20 = []
+    with open(filename, encoding='gbk') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            stock_id = row['股票代码']
+            stock_name = row['股票名称']
+            first_date = row['交易日期']
+            prices.append(float(row['收盘价']))
+            ma20.append(float(row['MA_20']))
+    return stock_id, stock_name, first_date, np.array(prices)[::-1], np.array(ma20)[::-1]
+
+
+def _worker_main(filename):
+    stock_id, stock_name, first_date, prices, ma20 = parse_csv_file(filename)
+    result = (stock_id, stock_name, first_date) + analyze_actions(mm_actions(prices, ma20))
     return result
 
 
-def compute(stock_info, stock_id, avg_window=20, plot_prices=False):
-    sec_id = stock_id
-    if stock_id[0] == '0':
-        sec_id += '.XSHE'
-    elif stock_id[0] == '6':
-        sec_id += '.XSHG'
-    else:
-        raise ValueError(f'Invalid stock id {stock_id}')
-    hist = stock_info.get_history(sec_id)
-    logging.debug('Receive response %r', hist)
-    try:
-        hist = hist['data']
-    except KeyError:
-        raise RuntimeError(hist['retMsg'])
-    hist.sort(key=lambda h: h['tradeDate'])
-    prices = np.array([h['closePrice'] for h in hist])
-    mm = moving_mean(prices, avg_window)
-    actions = np.array(mm_actions(prices[avg_window:], mm))
-
-    win_ratios = (actions[:, 1] - actions[:, 0]) / actions[:, 0]
-    total_win_ratio = (actions[:, 1] - actions[:, 0]).sum() / actions[:, 0].sum()
-    logging.debug('actions:\n%r\nwin_ratios:\n%r', actions, win_ratios)
-
-    if plot_prices:
-        from matplotlib import pyplot as plt
-        plt.cla()
-        plt.plot(prices[avg_window:], label='Close prices', marker='o')
-        plt.plot(mm, label=f'M{avg_window}', marker='o')
-        plt.legend()
-        plt.show()
-
-    return (stock_id, hist[0]['secShortName'], hist[0]['tradeDate'], len(actions),
-            total_win_ratio, max(0, np.max(win_ratios)),
-            min(0, np.min(win_ratios)), np.sum(actions[:, 0] < actions[:, 1]),
-            np.sum(actions[:, 0] > actions[:, 1]))
-
-
 def main():
+    logging.basicConfig(level=logging.INFO, format='[%(levelname)s %(asctime)s]    %(message)s')
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--id', required=True, help='一个或多个股票代码，用逗号分离')
     parser.add_argument('-f', '--file', required=True, help='输出Excel文件名')
-    parser.add_argument('-t', '--token', required=True, help='通联数据Token')
-    parser.add_argument('--plot', action='store_true', help='显示股票走势')
-    parser.add_argument('--debug', action='store_true', help='开启调试模式')
+    parser.add_argument('-d', '--dir', required=True, help='CSV文件目录')
 
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO if not args.debug else logging.DEBUG,
-                        format='[%(levelname)s %(asctime)s]    %(message)s')
+    logging.basicConfig(level=logging.INFO, format='[%(levelname)s %(asctime)s]    %(message)s')
 
-    ids = args.id.split(',')
-    stock_info = StockInfo(args.token)
+    filenames = glob.glob(f'{args.dir}/*.csv')
+    logging.info('总共有%d个文件待处理', len(filenames))
+    pool = multiprocessing.Pool()
+    lazy_results = pool.imap_unordered(_worker_main, filenames, 16)
+
     writer = xlsxwriter.Workbook(args.file)
+    logging.info('打开文件 %s', args.file)
     try:
         percent_format = writer.add_format({'num_format': '0.00%'})
         sheet = writer.add_worksheet()
@@ -101,26 +95,22 @@ def main():
                                   '累计收益率', '单次最大收益率', '单次最大亏损率', '收益次数', '亏损次数']):
             sheet.write_string(0, i, name)
 
-        for j, id in enumerate(ids):
-            logging.info('获取股票%s数据中...', id)
-            try:
-                info = compute(stock_info=stock_info, stock_id=id, plot_prices=args.plot)
-            except Exception as e:
-                logging.error('异常%r', e)
-            else:
-                logging.info('写入文件%s', args.file)
-                for i, v in enumerate(info):
-                    if isinstance(v, str):
-                        sheet.write_string(j + 1, i, v)
-                    elif isinstance(v, (float, np.float32, np.float64)):
-                        sheet.write_number(j + 1, i, v, percent_format)
-                    elif isinstance(v, (int, np.int32, np.int64)):
-                        sheet.write_number(j + 1, i, v)
-                    else:
-                        raise AssertionError(f'Invalid value {v} of type {type(v)}')
+        for j, info in enumerate(lazy_results):
+            for i, v in enumerate(info):
+                if isinstance(v, str):
+                    sheet.write_string(j + 1, i, v)
+                elif isinstance(v, (float, np.float32, np.float64)):
+                    sheet.write_number(j + 1, i, v, percent_format)
+                elif isinstance(v, (int, np.int32, np.int64)):
+                    sheet.write_number(j + 1, i, v)
+                else:
+                    raise AssertionError(f'Invalid value {v} of type {type(v)}')
+            if j % 10 == 0:
+                logging.info('完成%f%%', (j + 1) / len(filenames) * 100)
+        logging.info('完成100%')
     finally:
         writer.close()
-        logging.info('关闭文件%s', args.file)
+        logging.info('关闭文件 %s', args.file)
 
 
 if __name__ == '__main__':
