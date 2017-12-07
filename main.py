@@ -46,9 +46,9 @@ def mm_actions(prices, mm):
 
 
 def analyze_actions(actions):
-    win_ratios = (actions[:, 1] - actions[:, 0]) / actions[:, 0]
-    total_win_ratio = (actions[:, 1] - actions[:, 0]).sum() / actions[:, 0].sum()
-    return (len(actions), total_win_ratio, max(0, np.max(win_ratios)), min(0, np.min(win_ratios)),
+    ratios = actions[:, 1] / actions[:, 0]
+    total_win_ratio = np.prod(ratios) - 1.0
+    return (len(actions), total_win_ratio, max(1.0, np.max(ratios)) - 1.0, min(1.0, np.min(ratios)) - 1.0,
             np.sum(actions[:, 0] < actions[:, 1]), np.sum(actions[:, 0] > actions[:, 1]))
 
 
